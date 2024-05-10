@@ -13,6 +13,9 @@ pub enum InputMessageBody {
         msg_id: u32,
         echo: String,
     },
+    Generate {
+        msg_id: u32,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -33,6 +36,10 @@ pub enum OutputMessageBody {
         msg_id: u32,
         in_reply_to: u32,
         echo: String,
+    },
+    GenerateOk {
+        id: i64,
+        in_reply_to: u32,
     },
 }
 
