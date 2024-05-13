@@ -1,23 +1,23 @@
 use std::io::{self, BufRead};
 
+use event_loop::{handle_single_line, run_initialized_loop};
 use handler::{Handler, InitializedHandler, UninitHandler};
 use messages::Message;
 
+mod event_loop;
 mod handler;
 mod messages;
 mod unique_id;
 
 fn main() {
+    // wait for handler initialization message
     let initialized_handler = run_uninitialized_loop();
-    let Some(mut initialized_handler) = initialized_handler else {
+    let Some(initialized_handler) = initialized_handler else {
         return;
     };
 
-    let lines = io::stdin().lock().lines();
-    for line in lines {
-        let line = line.unwrap();
-        handle_single_line(&line, &mut initialized_handler);
-    }
+    // After the handler is initialized, run it to process all new messages
+    run_initialized_loop(initialized_handler);
 }
 
 fn run_uninitialized_loop() -> Option<InitializedHandler> {
@@ -36,13 +36,5 @@ fn run_uninitialized_loop() -> Option<InitializedHandler> {
         if let Some(initialized_handler) = handler.get_initialized_handler() {
             break Some(initialized_handler);
         }
-    }
-}
-
-fn handle_single_line<T: Handler>(line: &str, handler: &mut T) {
-    let message: Message = serde_json::from_str(line).unwrap();
-
-    if let Err(e) = handler.handle_message(message) {
-        eprintln!("failed to handle message: {e:?}");
     }
 }

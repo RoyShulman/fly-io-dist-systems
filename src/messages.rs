@@ -54,6 +54,17 @@ pub enum MessageBody {
     TopologyOk {
         in_reply_to: u32,
     },
+
+    // Node requests
+    InformNewBroadcast {
+        msg_id: u32,
+        messages: HashSet<u32>,
+    },
+
+    // Node responses
+    InformNewBroadcastOk {
+        in_reply_to: u32,
+    },
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -66,5 +77,6 @@ pub struct Message {
 pub fn send_message(message: &Message) {
     let stdout = std::io::stdout().lock();
     serde_json::to_writer(stdout, message)
-        .expect("writing a serialized messaged to stdout shouldn't fail")
+        .expect("writing a serialized messaged to stdout shouldn't fail");
+    println!();
 }

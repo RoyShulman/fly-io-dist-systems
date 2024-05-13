@@ -2,7 +2,8 @@ use crate::{
     messages::{send_message, Message, MessageBody},
     unique_id::SnowflakeIdGenerator,
 };
-use std::collections::{HashMap, HashSet};
+use rand::seq::IteratorRandom;
+use std::collections::{hash_map::Entry, HashMap, HashSet};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -81,6 +82,11 @@ fn parse_node_id(node_id: String) -> Result<u16, HandlerError> {
         .map_err(|_| HandlerError::InvalidMachineId(node_id))
 }
 
+enum PendingSentMessages {
+    /// An inform broadcast was sent to a neihbor. When he replies with ok we know he got the message.
+    InformBroadcast { messages: HashSet<u32>, dst: String },
+}
+
 ///
 /// Handler that is initialized. This means this node accepts the `init` message,
 /// responded and is ready to handle other data messages
@@ -89,11 +95,18 @@ pub struct InitializedHandler {
     node_id: String,
     neighbors: Vec<String>,
 
+    current_msg_id: u32,
+
     /// Holds all the messages seen so far
     messages: HashSet<u32>,
+
+    known_messages_to_neighbors: HashMap<String, HashSet<u32>>,
+    pending_messages_sent: HashMap<u32, PendingSentMessages>,
 }
 
 impl InitializedHandler {
+    const NUM_RANDOM_NEIGHBORS_TO_INFORM: usize = 2;
+
     pub fn new(machine_id: u16) -> Self {
         let unique_id_generator = SnowflakeIdGenerator::new(machine_id, 0);
         Self {
@@ -101,6 +114,9 @@ impl InitializedHandler {
             neighbors: Vec::new(),
             node_id: format!("n{machine_id}"),
             messages: HashSet::new(),
+            known_messages_to_neighbors: HashMap::new(),
+            pending_messages_sent: HashMap::new(),
+            current_msg_id: 0,
         }
     }
 
@@ -113,6 +129,108 @@ impl InitializedHandler {
             self.node_id, neighbors
         );
         self.neighbors = neighbors;
+        for neighbor in &self.neighbors {
+            self.known_messages_to_neighbors
+                .insert(neighbor.clone(), HashSet::new());
+        }
+    }
+
+    ///
+    /// Choose a few neighbors in random and send them all the messages we know they haven't seen.
+    pub fn handle_gossip_timer(&mut self) {
+        let neighbors_to_inform = self.neighbors.iter().choose_multiple(
+            &mut rand::thread_rng(),
+            Self::NUM_RANDOM_NEIGHBORS_TO_INFORM,
+        );
+
+        for neighbor in neighbors_to_inform.into_iter().cloned() {
+            let known_by_other = self
+                .known_messages_to_neighbors
+                .entry(neighbor.clone())
+                .or_default();
+
+            let messages: HashSet<_> = self.messages.difference(known_by_other).copied().collect();
+            if messages.is_empty() {
+                // no need to send empty messages
+                continue;
+            }
+
+            let body = MessageBody::InformNewBroadcast {
+                msg_id: self.current_msg_id,
+                messages: messages.clone(),
+            };
+            let message = Message {
+                src: self.node_id.clone(),
+                dest: neighbor.clone(),
+                body,
+            };
+            send_message(&message);
+            match self.pending_messages_sent.entry(self.current_msg_id) {
+                Entry::Occupied(_) => eprintln!(
+                    "pending message with the same message id ({}) was already sent!",
+                    self.current_msg_id
+                ),
+                Entry::Vacant(e) => {
+                    let _ = e.insert(PendingSentMessages::InformBroadcast {
+                        messages,
+                        dst: neighbor,
+                    });
+                }
+            };
+
+            self.current_msg_id += 1;
+        }
+    }
+
+    ///
+    /// A node sent us of the new messages he has seen so far.
+    /// We should update the total messages set, and also the seen messages from this neighbor
+    fn handle_inform_new_broadcast(
+        &mut self,
+        message_src: String,
+        msg_id: u32,
+        messages: HashSet<u32>,
+    ) {
+        self.messages.extend(messages.clone());
+
+        match self.known_messages_to_neighbors.entry(message_src.clone()) {
+            Entry::Occupied(mut entry) => entry.get_mut().extend(messages),
+            Entry::Vacant(entry) => {
+                eprintln!(
+                    "Got a messages from an unknown neighbor {message_src}. This shouldn't happen"
+                );
+                entry.insert(messages);
+            }
+        };
+
+        let body = MessageBody::InformNewBroadcastOk {
+            in_reply_to: msg_id,
+        };
+        let response = Message {
+            src: self.node_id.clone(),
+            dest: message_src,
+            body,
+        };
+        send_message(&response);
+    }
+
+    fn handle_response(&mut self, msg_id: u32) {
+        let Some(pending_message) = self.pending_messages_sent.remove(&msg_id) else {
+            eprintln!("Got an response message to a message that wasn't sent (msg_id = {msg_id})");
+            return;
+        };
+
+        self.handle_pending_message(pending_message);
+    }
+
+    fn handle_pending_message(&mut self, message: PendingSentMessages) {
+        match message {
+            PendingSentMessages::InformBroadcast { messages, dst } => self
+                .known_messages_to_neighbors
+                .entry(dst)
+                .and_modify(|known_messages| known_messages.extend(messages))
+                .or_default(),
+        };
     }
 }
 
@@ -196,6 +314,10 @@ impl Handler for InitializedHandler {
             | MessageBody::BroadcastOk { .. }
             | MessageBody::ReadOk { .. }
             | MessageBody::TopologyOk { .. } => (),
+            MessageBody::InformNewBroadcast { msg_id, messages } => {
+                self.handle_inform_new_broadcast(message.src, msg_id, messages)
+            }
+            MessageBody::InformNewBroadcastOk { in_reply_to } => self.handle_response(in_reply_to),
         };
 
         Ok(())
