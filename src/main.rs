@@ -1,7 +1,7 @@
 use std::io::{self, BufRead};
 
 use handler::{Handler, InitializedHandler, UninitHandler};
-use messages::{InputMessage, InputMessageBody, OutputMessage, OutputMessageBody};
+use messages::Message;
 
 mod handler;
 mod messages;
@@ -33,18 +33,16 @@ fn run_uninitialized_loop() -> Option<InitializedHandler> {
 
         let line = line.trim();
         handle_single_line(line, &mut handler);
-        if let Some(initialized_handler) = handler.into_initialized_handler() {
+        if let Some(initialized_handler) = handler.get_initialized_handler() {
             break Some(initialized_handler);
         }
     }
 }
 
 fn handle_single_line<T: Handler>(line: &str, handler: &mut T) {
-    let message: InputMessage = serde_json::from_str(line).unwrap();
+    let message: Message = serde_json::from_str(line).unwrap();
 
-    let output_message = handler.handle_message(message).unwrap();
-
-    let serialized =
-        serde_json::to_string(&output_message).expect("output message is serializable");
-    println!("{}", serialized);
+    if let Err(e) = handler.handle_message(message) {
+        eprintln!("failed to handle message: {e:?}");
+    }
 }

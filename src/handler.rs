@@ -1,9 +1,9 @@
-use thiserror::Error;
-
 use crate::{
-    messages::{InputMessage, InputMessageBody, OutputMessage, OutputMessageBody},
+    messages::{send_message, Message, MessageBody},
     unique_id::SnowflakeIdGenerator,
 };
+use std::collections::{HashMap, HashSet};
+use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum HandlerError {
@@ -16,12 +16,12 @@ pub enum HandlerError {
 }
 
 pub trait Handler {
-    fn handle_message(&mut self, message: InputMessage) -> Result<OutputMessage, HandlerError>;
+    fn handle_message(&mut self, message: Message) -> Result<(), HandlerError>;
 }
 
 ///
 /// Handler for `init` messages
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct UninitHandler {
     machine_id: Option<u16>,
 }
@@ -31,18 +31,15 @@ impl UninitHandler {
         Self { machine_id: None }
     }
 
-    pub fn into_initialized_handler(&self) -> Option<InitializedHandler> {
-        match self.machine_id {
-            Some(id) => Some(InitializedHandler::new(id)),
-            None => None,
-        }
+    pub fn get_initialized_handler(&self) -> Option<InitializedHandler> {
+        self.machine_id.map(InitializedHandler::new)
     }
 }
 
 impl Handler for UninitHandler {
-    fn handle_message(&mut self, message: InputMessage) -> Result<OutputMessage, HandlerError> {
+    fn handle_message(&mut self, message: Message) -> Result<(), HandlerError> {
         let (node_id, msg_id) = match message.body {
-            InputMessageBody::Init {
+            MessageBody::Init {
                 msg_id,
                 node_id,
                 node_ids: _,
@@ -58,14 +55,17 @@ impl Handler for UninitHandler {
         }
 
         self.machine_id.replace(machine_id);
-
-        Ok(OutputMessage {
+        let response = Message {
             src: message.dest,
             dest: message.src,
-            body: OutputMessageBody::InitOk {
+            body: MessageBody::InitOk {
                 in_reply_to: msg_id,
             },
-        })
+        };
+
+        send_message(&response);
+
+        Ok(())
     }
 }
 
@@ -86,6 +86,11 @@ fn parse_node_id(node_id: String) -> Result<u16, HandlerError> {
 /// responded and is ready to handle other data messages
 pub struct InitializedHandler {
     unique_id_generator: SnowflakeIdGenerator,
+    node_id: String,
+    neighbors: Vec<String>,
+
+    /// Holds all the messages seen so far
+    messages: HashSet<u32>,
 }
 
 impl InitializedHandler {
@@ -93,36 +98,106 @@ impl InitializedHandler {
         let unique_id_generator = SnowflakeIdGenerator::new(machine_id, 0);
         Self {
             unique_id_generator,
+            neighbors: Vec::new(),
+            node_id: format!("n{machine_id}"),
+            messages: HashSet::new(),
         }
+    }
+
+    fn handle_topology(&mut self, mut topology: HashMap<String, Vec<String>>) {
+        let Some(neighbors) = topology.remove(&self.node_id) else {
+            return;
+        };
+        eprintln!(
+            "{} - updating topology with neighbors: {:?}",
+            self.node_id, neighbors
+        );
+        self.neighbors = neighbors;
     }
 }
 
 impl Handler for InitializedHandler {
-    fn handle_message(&mut self, message: InputMessage) -> Result<OutputMessage, HandlerError> {
-        let body = match message.body {
-            InputMessageBody::Init { .. } => {
+    fn handle_message(&mut self, message: Message) -> Result<(), HandlerError> {
+        match message.body {
+            MessageBody::Init { .. } => {
                 return Err(HandlerError::UnprocessableMessage(
                     "initialized handler shouldn't accept init mesage".to_string(),
                 ))
             }
-            InputMessageBody::Echo { msg_id, echo } => OutputMessageBody::EchoOk {
-                msg_id,
-                in_reply_to: msg_id,
-                echo,
-            },
-            InputMessageBody::Generate { msg_id } => {
+            MessageBody::Echo { msg_id, echo } => {
+                let body = MessageBody::EchoOk {
+                    msg_id,
+                    in_reply_to: msg_id,
+                    echo,
+                };
+                let message = Message {
+                    src: message.dest,
+                    dest: message.src,
+                    body,
+                };
+                send_message(&message);
+            }
+            MessageBody::Generate { msg_id } => {
                 let id = self.unique_id_generator.generate().get();
-                OutputMessageBody::GenerateOk {
+                let body = MessageBody::GenerateOk {
                     id,
                     in_reply_to: msg_id,
-                }
+                };
+                let message = Message {
+                    src: message.dest,
+                    dest: message.src,
+                    body,
+                };
+                send_message(&message);
             }
+            MessageBody::Broadcast {
+                msg_id,
+                message: value,
+            } => {
+                self.messages.insert(value);
+
+                let body = MessageBody::BroadcastOk {
+                    in_reply_to: msg_id,
+                };
+                let message = Message {
+                    src: message.dest,
+                    dest: message.src,
+                    body,
+                };
+                send_message(&message);
+            }
+            MessageBody::Read { msg_id } => {
+                let body = MessageBody::ReadOk {
+                    in_reply_to: msg_id,
+                    messages: self.messages.clone(),
+                };
+                let message = Message {
+                    src: message.dest,
+                    dest: message.src,
+                    body,
+                };
+                send_message(&message);
+            }
+            MessageBody::Topology { msg_id, topology } => {
+                self.handle_topology(topology);
+                let body = MessageBody::TopologyOk {
+                    in_reply_to: msg_id,
+                };
+                let message = Message {
+                    src: message.dest,
+                    dest: message.src,
+                    body,
+                };
+                send_message(&message);
+            }
+            MessageBody::InitOk { .. }
+            | MessageBody::EchoOk { .. }
+            | MessageBody::GenerateOk { .. }
+            | MessageBody::BroadcastOk { .. }
+            | MessageBody::ReadOk { .. }
+            | MessageBody::TopologyOk { .. } => (),
         };
 
-        Ok(OutputMessage {
-            src: message.dest,
-            dest: message.src,
-            body,
-        })
+        Ok(())
     }
 }
