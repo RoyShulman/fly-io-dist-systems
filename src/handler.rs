@@ -105,7 +105,7 @@ pub struct InitializedHandler {
 }
 
 impl InitializedHandler {
-    const NUM_RANDOM_NEIGHBORS_TO_INFORM: usize = 2;
+    const NUM_RANDOM_NEIGHBORS_TO_INFORM: usize = 10;
 
     pub fn new(machine_id: u16) -> Self {
         let unique_id_generator = SnowflakeIdGenerator::new(machine_id, 0);
@@ -135,9 +135,7 @@ impl InitializedHandler {
         }
     }
 
-    ///
-    /// Choose a few neighbors in random and send them all the messages we know they haven't seen.
-    pub fn handle_gossip_timer(&mut self) {
+    fn send_inform_broadcast_to_neighbors(&mut self) {
         let neighbors_to_inform = self.neighbors.iter().choose_multiple(
             &mut rand::thread_rng(),
             Self::NUM_RANDOM_NEIGHBORS_TO_INFORM,
@@ -180,6 +178,12 @@ impl InitializedHandler {
 
             self.current_msg_id += 1;
         }
+    }
+
+    ///
+    /// Choose a few neighbors in random and send them all the messages we know they haven't seen.
+    pub fn handle_gossip_timer(&mut self) {
+        self.send_inform_broadcast_to_neighbors()
     }
 
     ///

@@ -1,6 +1,7 @@
 use std::{
     io::{self, BufRead},
     sync::mpsc,
+    time::{Duration, Instant},
 };
 
 use crate::{
@@ -46,7 +47,7 @@ pub fn run_initialized_loop(initialized_handler: InitializedHandler) {
     });
 
     std::thread::spawn(move || loop {
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        std::thread::sleep(std::time::Duration::from_millis(150));
         if let Err(e) = events_tx.send(Event::Timer) {
             eprintln!("failed to send new timer event: {e:?}");
         }
